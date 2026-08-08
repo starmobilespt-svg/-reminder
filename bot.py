@@ -9,7 +9,7 @@ import pytz
 import os
 
 # ----------------- Configurations -----------------
-BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8800884469:AAFraD3vphlEw-umzb6qpDpqjempWIofPu4')
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
