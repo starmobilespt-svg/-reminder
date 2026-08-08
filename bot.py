@@ -2,35 +2,47 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 import threading
-from pymongo import MongoClient
+import sqlite3
 from apscheduler.schedulers.background import BackgroundScheduler
 import datetime
 import pytz
 import os
 
 # ----------------- Configurations -----------------
-# သင်၏ Telegram Bot Token နှင့် MongoDB URI ကို ဤနေရာတွင် ထည့်ပါ။
-# Render Environment Variables မှတစ်ဆင့် ခေါ်သုံးခြင်းဖြစ်ပါသည်။
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-MONGO_URI = os.environ.get('MONGO_URI', 'YOUR_MONGODB_URI_HERE')
-
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# ----------------- Database Setup -----------------
-# MongoDB သို့ ချိတ်ဆက်ခြင်း
-client = MongoClient(MONGO_URI)
-db = client['ReminderBotDB']
-tasks_col = db['tasks']
+# ----------------- Database Setup (SQLite) -----------------
+DB_FILE = "tasks.db"
+
+def get_db_connection():
+    # SQLite ချိတ်ဆက်မှုကို ခေါ်ယူရန်
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    # Database Table မရှိသေးလျှင် အသစ်တည်ဆောက်ရန်
+    conn = get_db_connection()
+    conn.execute('''CREATE TABLE IF NOT EXISTS tasks
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     chat_id INTEGER,
+                     task_name TEXT,
+                     frequency TEXT,
+                     time TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # ----------------- State Management -----------------
-# User တွေ အချက်အလက်ဖြည့်နေစဉ် ခေတ္တမှတ်ထားမည့် နေရာ
 user_steps = {}
 
 # ----------------- Flask Web Server (For Render Keep-Alive) -----------------
 @app.route('/')
 def home():
-    return "Bot is awake and running!"
+    return "Bot is awake and running on Local Database!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -42,8 +54,10 @@ def check_reminders():
     now = datetime.datetime.now(tz)
     current_time = now.strftime("%H:%M")
     
-    # Database ထဲမှ ယခုအချိန်နှင့် ကိုက်ညီသော Task များကို ရှာခြင်း
-    tasks = tasks_col.find({"time": current_time})
+    conn = get_db_connection()
+    tasks = conn.execute('SELECT * FROM tasks WHERE time = ?', (current_time,)).fetchall()
+    conn.close()
+
     for task in tasks:
         bot.send_message(
             task['chat_id'], 
@@ -51,25 +65,27 @@ def check_reminders():
             parse_mode="Markdown"
         )
 
-# မိနစ်တိုင်း စစ်ဆေးမည့် Scheduler စတင်ခြင်း
 scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Yangon'))
 scheduler.add_job(check_reminders, 'cron', minute='*')
 scheduler.start()
 
 # ----------------- Bot Handlers (Bot အလုပ်လုပ်ပုံများ) -----------------
 
-# /start နှိပ်လျှင် ပေါ်မည့် Main Menu (Bottom Buttons)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = InlineKeyboardMarkup(row_width=2)
     btn_add = InlineKeyboardButton("➕ Add Task", callback_data="add_task")
     btn_view = InlineKeyboardButton("📋 View Tasks", callback_data="view_tasks")
     btn_delete = InlineKeyboardButton("🗑 Delete Task", callback_data="delete_task")
-    markup.add(btn_add, btn_view, btn_delete)
+    btn_backup = InlineKeyboardButton("📥 Backup DB", callback_data="backup_db")
+    btn_restore = InlineKeyboardButton("📤 Restore DB", callback_data="restore_db")
     
-    bot.send_message(message.chat.id, "👋 မင်္ဂလာပါ! ကျွန်တော်က သင့်ရဲ့ ကိုယ်ပိုင် Reminder Bot ပါ။\n\nအောက်ပါခလုတ်များကိုနှိပ်၍ အသုံးပြုနိုင်ပါသည်။", reply_markup=markup)
+    markup.add(btn_add, btn_view)
+    markup.add(btn_delete)
+    markup.add(btn_backup, btn_restore)
+    
+    bot.send_message(message.chat.id, "👋 မင်္ဂလာပါ! Local Database သုံး Reminder Bot ပါ။\n\nအောက်ပါခလုတ်များကိုနှိပ်၍ အသုံးပြုနိုင်ပါသည်။", reply_markup=markup)
 
-# ခလုတ်များကို နှိပ်လိုက်လျှင် အလုပ်လုပ်မည့် အပိုင်း
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
@@ -79,7 +95,10 @@ def handle_query(call):
         bot.register_next_step_handler(msg, process_task_name)
         
     elif call.data == "view_tasks":
-        tasks = list(tasks_col.find({"chat_id": chat_id}))
+        conn = get_db_connection()
+        tasks = conn.execute('SELECT * FROM tasks WHERE chat_id = ?', (chat_id,)).fetchall()
+        conn.close()
+        
         if not tasks:
             bot.send_message(chat_id, "🤷‍♂️ မှတ်ထားသော Task များ မရှိသေးပါ။")
             return
@@ -90,23 +109,39 @@ def handle_query(call):
         bot.send_message(chat_id, reply, parse_mode="Markdown")
         
     elif call.data == "delete_task":
-        tasks = list(tasks_col.find({"chat_id": chat_id}))
+        conn = get_db_connection()
+        tasks = conn.execute('SELECT * FROM tasks WHERE chat_id = ?', (chat_id,)).fetchall()
+        conn.close()
+        
         if not tasks:
             bot.send_message(chat_id, "🤷‍♂️ ဖျက်ရန် Task များ မရှိသေးပါ။")
             return
             
         markup = InlineKeyboardMarkup(row_width=1)
         for t in tasks:
-            markup.add(InlineKeyboardButton(f"❌ {t['task_name']}", callback_data=f"del_{t['_id']}"))
+            markup.add(InlineKeyboardButton(f"❌ {t['task_name']}", callback_data=f"del_{t['id']}"))
         bot.send_message(chat_id, "ဖျက်လိုသော Task ကို ရွေးချယ်ပါ-", reply_markup=markup)
         
     elif call.data.startswith("del_"):
         task_id = call.data.split("_")[1]
-        from bson.objectid import ObjectId
-        tasks_col.delete_one({"_id": ObjectId(task_id)})
+        conn = get_db_connection()
+        conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+        conn.commit()
+        conn.close()
         bot.send_message(chat_id, "✅ Task ကို အောင်မြင်စွာ ဖျက်လိုက်ပါပြီ။")
 
-# Task အမည် တောင်းခြင်း
+    # ----------------- Backup & Restore Features -----------------
+    elif call.data == "backup_db":
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, "rb") as file:
+                bot.send_document(chat_id, file, caption="📦 သင့်ရဲ့ Local Database (.db) ဖိုင်ပါ။\nဒေတာများ ပျက်သွားပါက ဤဖိုင်ကို အသုံးပြု၍ ပြန်လည် Restore လုပ်နိုင်ပါသည်။")
+        else:
+            bot.send_message(chat_id, "❌ Database ဖိုင် မရှိသေးပါ။")
+
+    elif call.data == "restore_db":
+        msg = bot.send_message(chat_id, "📤 Restore လုပ်ရန် သင့်ထံတွင် သိမ်းဆည်းထားသော **tasks.db** ဖိုင်ကို ဤနေရာသို့ ပေးပို့ပါ။")
+        bot.register_next_step_handler(msg, process_restore)
+
 def process_task_name(message):
     chat_id = message.chat.id
     user_steps[chat_id] = {'task_name': message.text}
@@ -120,7 +155,6 @@ def process_task_name(message):
     )
     bot.send_message(chat_id, "ဘယ်လိုပုံစံ သတိပေးရမလဲ ရွေးချယ်ပါ-", reply_markup=markup)
 
-# အချိန် (Frequency) ရွေးချယ်ခြင်း
 @bot.callback_query_handler(func=lambda call: call.data.startswith("freq_"))
 def process_frequency(call):
     chat_id = call.message.chat.id
@@ -131,12 +165,10 @@ def process_frequency(call):
         msg = bot.send_message(chat_id, "⏰ သတိပေးရမည့်အချိန်ကို (24 နာရီပုံစံ) ဖြင့် ရိုက်ထည့်ပါ။\n(ဥပမာ - 08:30, 14:00, 20:15)")
         bot.register_next_step_handler(msg, process_time)
 
-# အချိန် သတ်မှတ်ပြီး Database သို့ သိမ်းခြင်း
 def process_time(message):
     chat_id = message.chat.id
     time_str = message.text
     
-    # အချိန်ပုံစံ မှန်မမှန် စစ်ဆေးခြင်း
     try:
         datetime.datetime.strptime(time_str, '%H:%M')
     except ValueError:
@@ -145,24 +177,38 @@ def process_time(message):
         return
 
     if chat_id in user_steps:
-        task_data = {
-            "chat_id": chat_id,
-            "task_name": user_steps[chat_id]['task_name'],
-            "frequency": user_steps[chat_id]['frequency'],
-            "time": time_str
-        }
-        # Database ထဲသို့ ထည့်ခြင်း
-        tasks_col.insert_one(task_data)
-        del user_steps[chat_id]
+        conn = get_db_connection()
+        conn.execute('INSERT INTO tasks (chat_id, task_name, frequency, time) VALUES (?, ?, ?, ?)',
+                     (chat_id, user_steps[chat_id]['task_name'], user_steps[chat_id]['frequency'], time_str))
+        conn.commit()
+        conn.close()
         
-        bot.send_message(chat_id, f"✅ အောင်မြင်စွာ မှတ်သားလိုက်ပါပြီ!\n\n📌 {task_data['task_name']}\n⏰ နေ့စဉ် {time_str} အချိန်တွင် သတိပေးပါမည်။")
+        task_name = user_steps[chat_id]['task_name']
+        del user_steps[chat_id]
+        bot.send_message(chat_id, f"✅ အောင်မြင်စွာ မှတ်သားလိုက်ပါပြီ!\n\n📌 {task_name}\n⏰ နေ့စဉ် {time_str} အချိန်တွင် သတိပေးပါမည်။")
+
+# ----------------- Restore Function Handler -----------------
+def process_restore(message):
+    chat_id = message.chat.id
+    if message.document:
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            # Database ဖိုင်ဟောင်းနေရာတွင် အသစ်ကို အစားထိုးခြင်း
+            with open(DB_FILE, 'wb') as new_file:
+                new_file.write(downloaded_file)
+                
+            bot.send_message(chat_id, "✅ Database ကို အောင်မြင်စွာ Restore လုပ်ပြီးပါပြီ။")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Restore လုပ်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။\nError: {e}")
+    else:
+        bot.send_message(chat_id, "❌ မှန်ကန်သော Database Document ဖိုင် မဟုတ်ပါ။")
 
 # ----------------- Start Application -----------------
 if __name__ == "__main__":
-    # Flask Server ကို နောက်ကွယ် (Background Thread) မှ Run ခြင်း
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
     
-    # Telegram Bot ကို Run ခြင်း
-    print("Bot is running...")
+    print("Bot is running with SQLite Local Database...")
     bot.infinity_polling()
