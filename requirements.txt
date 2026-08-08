@@ -1,5 +1,4 @@
 pyTelegramBotAPI
 Flask
-pymongo
 APScheduler
 pytz
