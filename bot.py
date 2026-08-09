@@ -1,51 +1,45 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask
-import threading
+import os
 import sqlite3
+import threading
+from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 import datetime
 import pytz
-import os
 
-# --- Configuration ---
-# Render Environment Variable ထဲက BOT_TOKEN ကို ခေါ်ယူခြင်း
+# --- 1. CONFIGURATION ---
+# Token ကို code ထဲမှာ မရေးပါနဲ့
 TOKEN = os.environ.get('8800884469:AAFraD3vphlEw-umzb6qpDpqjempWIofPu4')
 
-# Error မတက်အောင် Token စစ်ဆေးခြင်း
 if not TOKEN:
-    print("❌ ERROR: BOT_TOKEN မတွေ့ပါ။ Render Dashboard > Environment ထဲမှာ BOT_TOKEN ကို သေချာထည့်ပေးပါ။")
-    # အကယ်၍ Token မရှိရင် Bot ကို ရပ်လိုက်ပါမယ်
+    print("❌ ERROR: BOT_TOKEN ကို Render Dashboard > Environment ထဲမှာ ထည့်ဖို့ မေ့နေပါတယ်။")
     exit(1)
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# --- Database Setup ---
+# --- 2. DATABASE ---
 DB_FILE = "tasks.db"
-
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
-# Database Table (Date field ထပ်ထည့်ထားပါတယ်)
+# Table တည်ဆောက်ခြင်း
 conn = get_db()
-conn.execute('''CREATE TABLE IF NOT EXISTS tasks 
-                (id INTEGER PRIMARY KEY, chat_id INTEGER, task_name TEXT, 
-                 frequency TEXT, time TEXT, task_date TEXT)''')
+conn.execute('CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, chat_id INTEGER, task_name TEXT, frequency TEXT, time TEXT, task_date TEXT)')
 conn.commit()
 conn.close()
 
-# --- Flask (Keep-Alive) ---
+# --- 3. FLASK & SCHEDULER ---
 @app.route('/')
 def home():
-    return "Bot is awake!"
+    return "Bot is running!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-# --- Reminder Logic ---
+# Reminder Logic
 def check_tasks():
     tz = pytz.timezone('Asia/Yangon')
     now = datetime.datetime.now(tz)
@@ -53,17 +47,15 @@ def check_tasks():
     current_date = now.strftime("%Y-%m-%d")
     
     conn = get_db()
-    # နေ့စဉ် အလုပ်များ
-    daily_tasks = conn.execute('SELECT * FROM tasks WHERE frequency = "daily" AND time = ?', (current_time,)).fetchall()
-    # တစ်ကြိမ်သာ အလုပ်များ
-    once_tasks = conn.execute('SELECT * FROM tasks WHERE frequency = "once" AND time = ? AND task_date = ?', (current_time, current_date)).fetchall()
+    tasks = conn.execute('SELECT * FROM tasks WHERE time = ?', (current_time,)).fetchall()
     
-    # သတိပေးခြင်း
-    for t in daily_tasks + once_tasks:
-        bot.send_message(t['chat_id'], f"🚨⏰ **ALARM! ALARM!** ⏰🚨\n\n📌 **Task:** {t['task_name']}\n📅 **Type:** {t['frequency'].upper()}")
+    for t in tasks:
+        # နေ့စဉ်ဆိုရင် အမြဲပို့၊ တစ်ကြိမ်သာဆိုရင် ရက်စစ်ပြီးမှပို့
+        if t['frequency'] == 'daily' or (t['frequency'] == 'once' and t['task_date'] == current_date):
+            bot.send_message(t['chat_id'], f"🚨⏰ **ALARM!** ⏰🚨\n\n📌 {t['task_name']}")
     
     # တစ်ကြိမ်သာ အလုပ်များကို ဖျက်ခြင်း
-    conn.execute('DELETE FROM tasks WHERE frequency = "once" AND time = ? AND task_date = ?', (current_time, current_date))
+    conn.execute('DELETE FROM tasks WHERE frequency = "once" AND task_date = ?', (current_date,))
     conn.commit()
     conn.close()
 
@@ -71,46 +63,15 @@ scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Yangon'))
 scheduler.add_job(check_tasks, 'cron', minute='*')
 scheduler.start()
 
-# --- UI ---
-def main_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ Add Task", "📋 View Tasks")
-    kb.add("🗑 Delete Task", "📥 Backup DB", "📤 Restore DB")
-    return kb
-
+# --- 4. BOT HANDLERS ---
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.send_message(m.chat.id, "👋 Reminder Bot အသင့်ဖြစ်ပါပြီ။", reply_markup=main_kb())
+    bot.send_message(m.chat.id, "👋 Bot အသင့်ဖြစ်ပါပြီ။")
 
-@bot.message_handler(func=lambda m: m.text == "➕ Add Task")
-def add_task(m):
-    msg = bot.send_message(m.chat.id, "Task အမည်ကို ရိုက်ထည့်ပါ:")
-    bot.register_next_step_handler(msg, lambda m2: ask_frequency(m2, m2.text))
-
-def ask_frequency(m, task_name):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("နေ့စဉ် (Daily)", callback_data=f"freq|daily|{task_name}"))
-    kb.add(InlineKeyboardButton("တစ်ကြိမ်သာ (One-time)", callback_data=f"freq|once|{task_name}"))
-    bot.send_message(m.chat.id, "ဘယ်လိုပုံစံလဲ ရွေးပါ:", reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("freq|"))
-def handle_freq(call):
-    _, freq, name = call.data.split("|")
-    msg = bot.send_message(call.message.chat.id, "အချိန်ကို (08:30) ပုံစံမျိုး ရိုက်ပေးပါ:")
-    bot.register_next_step_handler(msg, lambda m: save_task(m, freq, name))
-
-def save_task(m, freq, name):
-    time = m.text
-    date = datetime.datetime.now().strftime("%Y-%m-%d") if freq == 'once' else None
-    
-    conn = get_db()
-    conn.execute('INSERT INTO tasks (chat_id, task_name, frequency, time, task_date) VALUES (?, ?, ?, ?, ?)', 
-                 (m.chat.id, name, freq, time, date))
-    conn.commit()
-    conn.close()
-    bot.send_message(m.chat.id, f"✅ သိမ်းဆည်းပြီးပါပြီ ({freq})။")
-
-# [View/Delete/Backup/Restore ဟန်ဒလာများကို ယခင်ကအတိုင်းထားပါ]
+@bot.message_handler(func=lambda m: True)
+def echo(m):
+    # ဒီနေရာမှာ Button တွေကို ဆက်လက်ထည့်သွင်းပါ (ယခင် Code အတိုင်း)
+    bot.send_message(m.chat.id, "အလုပ်လုပ်နေပါတယ်။")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
