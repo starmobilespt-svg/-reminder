@@ -13,7 +13,10 @@ app = Flask(__name__)
 DB_FILE = "tasks.db"
 user_steps = {}
 
-# --- Database & Setup ---
+# --- Timezone Utility ---
+MYT = pytz.timezone('Asia/Yangon')
+
+# --- Database Setup ---
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -29,14 +32,14 @@ def init_db():
 
 init_db()
 
-# --- Flask & Scheduler ---
+# --- Flask Keep-Alive ---
 @app.route('/')
 def home(): return "Bot is running!"
 def run_flask(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
+# --- Scheduler ---
 def check_tasks():
-    tz = pytz.timezone('Asia/Yangon')
-    now = datetime.datetime.now(tz)
+    now = datetime.datetime.now(MYT) # မြန်မာစံတော်ချိန်ကို သုံးခြင်း
     current_time = now.strftime("%H:%M")
     today_date = now.strftime("%Y-%m-%d")
     today_day = now.strftime("%d")
@@ -58,17 +61,22 @@ def check_tasks():
             bot.send_message(t['chat_id'], f"🚨⏰ **ALARM!** ⏰🚨\n\n📌 **Task:** {t['task_name']}", reply_markup=kb)
     conn.close()
 
-scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Yangon'))
+scheduler = BackgroundScheduler(timezone=MYT)
 scheduler.add_job(check_tasks, 'cron', minute='*')
 scheduler.start()
 
-# --- Main Handlers ---
+# --- Handlers ---
 @bot.message_handler(commands=['start'])
 def start(m):
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("➕ Add Task", "📋 View Tasks")
     kb.add("🗑 Delete Task", "📥 Backup DB", "📤 Restore DB")
     bot.send_message(m.chat.id, "👋 Reminder Bot အသင့်ဖြစ်ပါပြီ။", reply_markup=kb)
+
+@bot.message_handler(commands=['time'])
+def show_time(m):
+    now = datetime.datetime.now(MYT)
+    bot.reply_to(m, f"⏰ လက်ရှိမြန်မာစံတော်ချိန်: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
 @bot.message_handler(func=lambda m: m.text == "➕ Add Task")
 def add_task(m):
@@ -88,7 +96,7 @@ def handle_freq(call):
     _, freq, name = call.data.split("|")
     user_steps[call.message.chat.id] = {'freq': freq, 'name': name}
     if freq == 'monthly': bot.send_message(call.message.chat.id, "လစဉ် ဘယ်ရက်မှာလဲ? (01-31):")
-    elif freq == 'yearly': bot.send_message(call.message.chat.id, "နှစ်စဉ် ဘယ်နေ့လဲ? (လ-ရက်, ဥပမာ 08-09):")
+    elif freq == 'yearly': bot.send_message(call.message.chat.id, "နှစ်တိုင်း ဘယ်နေ့လဲ? (လ-ရက်, ဥပမာ 08-09):")
     else: bot.send_message(call.message.chat.id, "အချိန်ကို (08:30) ပုံစံမျိုး ရိုက်ပေးပါ:")
     bot.register_next_step_handler(call.message, handle_time)
 
@@ -99,8 +107,7 @@ def handle_time(m):
         date_val = m.text
         msg = bot.send_message(m.chat.id, "အချိန်ကို (08:30) ပုံစံမျိုး ရိုက်ပေးပါ:")
         bot.register_next_step_handler(msg, lambda m2: save_task(m2, freq, name, date_val))
-    else: 
-        save_task(m, freq, name, datetime.datetime.now().strftime("%Y-%m-%d") if freq == 'once' else None)
+    else: save_task(m, freq, name, datetime.datetime.now(MYT).strftime("%Y-%m-%d") if freq == 'once' else None)
 
 def save_task(m, freq, name, date_val):
     conn = get_db()
@@ -108,14 +115,8 @@ def save_task(m, freq, name, date_val):
                  (m.chat.id, name, freq, m.text, date_val))
     conn.commit()
     conn.close()
-    
-    # အတည်ပြုစာ ပို့ခြင်း
-    msg = f"✅ အလုပ်ကို သိမ်းဆည်းလိုက်ပါပြီ!\n\n📌 အလုပ်: {name}\n🔁 အမျိုးအစား: {freq.upper()}\n⏰ အချိန်: {m.text}"
-    if freq == 'monthly': msg += f"\n📅 ရက်စွဲ: လစဉ် {date_val} ရက်နေ့"
-    elif freq == 'yearly': msg += f"\n📅 ရက်စွဲ: နှစ်စဉ် {date_val} (လ-ရက်)"
-    bot.send_message(m.chat.id, msg)
+    bot.send_message(m.chat.id, f"✅ သိမ်းဆည်းပြီးပါပြီ!\n\n📌 {name}\n🔁 {freq}\n⏰ {m.text}")
 
-# View/Delete/Dismiss
 @bot.message_handler(func=lambda m: m.text == "📋 View Tasks")
 def view(m):
     conn = get_db()
