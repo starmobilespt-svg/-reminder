@@ -10,7 +10,7 @@ import os
 
 # --- Configuration ---
 # Render Environment Variable ထဲက BOT_TOKEN ကို ခေါ်ယူခြင်း
-TOKEN = os.environ.get("8800884469:AAFraD3vphlEw-umzb6qpDpqjempWIofPu4")
+TOKEN = os.environ.get('8800884469:AAFraD3vphlEw-umzb6qpDpqjempWIofPu4')
 
 # Error မတက်အောင် Token စစ်ဆေးခြင်း
 if not TOKEN:
