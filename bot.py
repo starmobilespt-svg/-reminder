@@ -70,7 +70,6 @@ def start(m):
     kb.add("🗑 Delete Task", "📥 Backup DB", "📤 Restore DB")
     bot.send_message(m.chat.id, "👋 Reminder Bot အသင့်ဖြစ်ပါပြီ။", reply_markup=kb)
 
-# Add Task
 @bot.message_handler(func=lambda m: m.text == "➕ Add Task")
 def add_task(m):
     msg = bot.send_message(m.chat.id, "အလုပ်အမည် ရိုက်ထည့်ပါ:")
@@ -100,7 +99,8 @@ def handle_time(m):
         date_val = m.text
         msg = bot.send_message(m.chat.id, "အချိန်ကို (08:30) ပုံစံမျိုး ရိုက်ပေးပါ:")
         bot.register_next_step_handler(msg, lambda m2: save_task(m2, freq, name, date_val))
-    else: save_task(m, freq, name, datetime.datetime.now().strftime("%Y-%m-%d") if freq == 'once' else None)
+    else: 
+        save_task(m, freq, name, datetime.datetime.now().strftime("%Y-%m-%d") if freq == 'once' else None)
 
 def save_task(m, freq, name, date_val):
     conn = get_db()
@@ -108,7 +108,12 @@ def save_task(m, freq, name, date_val):
                  (m.chat.id, name, freq, m.text, date_val))
     conn.commit()
     conn.close()
-    bot.send_message(m.chat.id, "✅ သိမ်းဆည်းပြီးပါပြီ။")
+    
+    # အတည်ပြုစာ ပို့ခြင်း
+    msg = f"✅ အလုပ်ကို သိမ်းဆည်းလိုက်ပါပြီ!\n\n📌 အလုပ်: {name}\n🔁 အမျိုးအစား: {freq.upper()}\n⏰ အချိန်: {m.text}"
+    if freq == 'monthly': msg += f"\n📅 ရက်စွဲ: လစဉ် {date_val} ရက်နေ့"
+    elif freq == 'yearly': msg += f"\n📅 ရက်စွဲ: နှစ်စဉ် {date_val} (လ-ရက်)"
+    bot.send_message(m.chat.id, msg)
 
 # View/Delete/Dismiss
 @bot.message_handler(func=lambda m: m.text == "📋 View Tasks")
